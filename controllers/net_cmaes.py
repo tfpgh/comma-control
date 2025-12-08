@@ -131,7 +131,7 @@ if __name__ == "__main__":
     import cma
     from multiprocessing import Pool
 
-    NUM_CORES = 1
+    NUM_CORES = 63
     POPULATION_SIZE = 64
     NUM_SEGMENTS = 300
     MAX_GENERATIONS = 2000
