@@ -4,3 +4,4 @@ report.html
 models/tinyphysics_*.onnx
 *.swp
 venv/
+*.npy
