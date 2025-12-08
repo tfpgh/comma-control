@@ -72,8 +72,8 @@ class Controller(BaseController):
         # not sure this does much...
         x = np.array(
             [
-                error,  # ~[-5, 5]
-                error_deriv,  # small
+                error / 5.0,
+                error_deriv / 2.0,
                 self.error_integral / 5.0,  # [-1, 1]
                 target_lataccel / 5.0,  # [-1, 1]
                 state.v_ego / 30.0,  # [0,1.2]
