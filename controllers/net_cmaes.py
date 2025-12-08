@@ -5,8 +5,8 @@ import numpy as np
 from controllers import BaseController
 from tinyphysics import FuturePlan, State
 
-INPUT_LAYER_SIZE = 13  # Changing requires adding or removing actual inputs
-HIDDEN_LAYER_SIZE = 48
+INPUT_LAYER_SIZE = 10  # Changing requires adding or removing actual inputs
+HIDDEN_LAYER_SIZE = 16
 NUM_PARAMS = (
     INPUT_LAYER_SIZE * HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + 1
 )
@@ -25,7 +25,6 @@ class Controller(BaseController):
         self.prev_error = 0.0
         self.error_integral = 0.0
         self.prev_action = 0.0
-        self.prev_prev_action = 0.0
 
         # load params if they exist
         params_path = Path(__file__).parent.parent / "best_params.npy"
@@ -47,7 +46,6 @@ class Controller(BaseController):
         self.prev_error = 0.0
         self.error_integral = 0.0
         self.prev_action = 0.0
-        self.prev_prev_action = 0.0
 
     def update(
         self,
@@ -65,7 +63,6 @@ class Controller(BaseController):
         fp = future_plan.lataccel if future_plan.lataccel else []
         future_near = np.mean(fp[:5]) if len(fp) >= 5 else target_lataccel
         future_mid = np.mean(fp[5:15]) if len(fp) >= 15 else target_lataccel
-        future_far = np.mean(fp[15:30]) if len(fp) >= 30 else target_lataccel
 
         # build input features
         # here I normalize them to try to make learning faster
@@ -74,17 +71,14 @@ class Controller(BaseController):
             [
                 error / 5.0,
                 error_deriv / 2.0,
-                self.error_integral / 5.0,  # [-1, 1]
-                target_lataccel / 5.0,  # [-1, 1]
-                state.v_ego / 30.0,  # [0,1.2]
-                state.a_ego / 4.0,  # [-1,1]
-                state.roll_lataccel / 2.0,  # [-0.85,0.85]
-                self.prev_action / 2.0,  # [-1,1]
-                self.prev_prev_action / 2.0,  # [-1,1]
-                self.prev_error / 5.0,
+                self.error_integral / 5.0,
+                target_lataccel / 5.0,
+                state.v_ego / 30.0,
+                state.a_ego / 4.0,
+                state.roll_lataccel / 2.0,
+                self.prev_action / 2.0,
                 future_near / 5.0,
                 future_mid / 5.0,
-                future_far / 5.0,
             ]
         )
 
@@ -96,7 +90,6 @@ class Controller(BaseController):
         action = float(output[0]) * 2.0
 
         # update state
-        self.prev_prev_action = self.prev_action
         self.prev_error = error
         self.prev_action = action
 
@@ -155,7 +148,7 @@ if __name__ == "__main__":
 
     NUM_CORES = 63
     POPULATION_SIZE = 63
-    NUM_SEGMENTS = 100
+    NUM_SEGMENTS = 65
     MAX_GENERATIONS = 2000
     MODEL_PATH = Path("./models/tinyphysics.onnx")
     DATA_PATH = Path("./data")
