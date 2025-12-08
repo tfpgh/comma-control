@@ -27,6 +27,11 @@ class Controller(BaseController):
         self.error_integral = 0.0
         self.prev_action = 0.0
 
+        # load params if they exist
+        params_path = Path(__file__).parent.parent / "best_params.npy"
+        if params_path.exists():
+            self.set_params(np.load(params_path))
+
     def set_params(self, params: np.ndarray) -> None:
         idx = 0
         self.w1 = params[
