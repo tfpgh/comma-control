@@ -5,8 +5,8 @@ import numpy as np
 from controllers import BaseController
 from tinyphysics import FuturePlan, State
 
-INPUT_LAYER_SIZE = 9  # Changing requires adding or removing actual inputs
-HIDDEN_LAYER_SIZE = 12
+INPUT_LAYER_SIZE = 13  # Changing requires adding or removing actual inputs
+HIDDEN_LAYER_SIZE = 48
 NUM_PARAMS = (
     INPUT_LAYER_SIZE * HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + 1
 )
@@ -25,6 +25,7 @@ class Controller(BaseController):
         self.prev_error = 0.0
         self.error_integral = 0.0
         self.prev_action = 0.0
+        self.prev_prev_action = 0.0
 
         # load params if they exist
         params_path = Path(__file__).parent.parent / "best_params.npy"
@@ -46,6 +47,7 @@ class Controller(BaseController):
         self.prev_error = 0.0
         self.error_integral = 0.0
         self.prev_action = 0.0
+        self.prev_prev_action = 0.0
 
     def update(
         self,
@@ -59,14 +61,11 @@ class Controller(BaseController):
         error_deriv = error - self.prev_error
         self.error_integral = np.clip(self.error_integral + error, -5, 5)
 
-        # target future delta
-        # it can be empty at the end of the run
-        if future_plan.lataccel:
-            future_target_mean = np.mean(future_plan.lataccel[:10])
-        else:
-            future_target_mean = target_lataccel
-
-        target_delta = future_target_mean - target_lataccel
+        # futures
+        fp = future_plan.lataccel if future_plan.lataccel else []
+        future_near = np.mean(fp[:5]) if len(fp) >= 5 else target_lataccel
+        future_mid = np.mean(fp[5:15]) if len(fp) >= 15 else target_lataccel
+        future_far = np.mean(fp[15:30]) if len(fp) >= 30 else target_lataccel
 
         # build input features
         # here I normalize them to try to make learning faster
@@ -81,7 +80,11 @@ class Controller(BaseController):
                 state.a_ego / 4.0,  # [-1,1]
                 state.roll_lataccel / 2.0,  # [-0.85,0.85]
                 self.prev_action / 2.0,  # [-1,1]
-                target_delta / 2.0,
+                self.prev_prev_action / 2.0,  # [-1,1]
+                self.prev_error / 5.0,
+                future_near / 5.0,
+                future_mid / 5.0,
+                future_far / 5.0,
             ]
         )
 
@@ -93,6 +96,7 @@ class Controller(BaseController):
         action = float(output[0]) * 2.0
 
         # update state
+        self.prev_prev_action = self.prev_action
         self.prev_error = error
         self.prev_action = action
 
@@ -144,13 +148,14 @@ def evaluate(args: tuple[np.ndarray, int, int]) -> float:
 
 
 if __name__ == "__main__":
+    import pickle
     from multiprocessing import Pool
 
     import cma
 
     NUM_CORES = 63
-    POPULATION_SIZE = 64
-    NUM_SEGMENTS = 50
+    POPULATION_SIZE = 63
+    NUM_SEGMENTS = 100
     MAX_GENERATIONS = 2000
     MODEL_PATH = Path("./models/tinyphysics.onnx")
     DATA_PATH = Path("./data")
@@ -159,25 +164,35 @@ if __name__ == "__main__":
     print(f"Found {len(data_files)} data files")
 
     # cmaes setup
-    x0 = np.random.randn(NUM_PARAMS) * 0.1
-    es = cma.CMAEvolutionStrategy(
-        x0,
-        0.5,
-        {
-            "popsize": POPULATION_SIZE,
-            "maxiter": MAX_GENERATIONS,
-        },
-    )
+    if Path("cmaes_state.pkl").exists():
+        with open("cmaes_state.pkl", "rb") as f:
+            es = pickle.load(f)
+
+        best_ever = es.result.fbest
+        gen = es.countiter
+
+        print(f"Resumed from gen ~{es.countiter}")
+    else:
+        x0 = np.random.randn(NUM_PARAMS) * 0.1
+        es = cma.CMAEvolutionStrategy(
+            x0,
+            0.5,
+            {
+                "popsize": POPULATION_SIZE,
+                "maxiter": MAX_GENERATIONS,
+            },
+        )
+
+        best_ever = float("inf")
+        gen = 0
 
     print(
         f"Running CMA-ES: {NUM_PARAMS} params, segs={NUM_SEGMENTS}, cores={NUM_CORES}"
     )
 
-    best_ever = float("inf")
     with Pool(
         NUM_CORES, initializer=init_worker, initargs=(MODEL_PATH, data_files)
     ) as pool:
-        gen = 0
         while not es.stop():
             solutions = es.ask()
 
@@ -194,11 +209,13 @@ if __name__ == "__main__":
                 np.save("best_params.npy", es.result.xbest)  # type: ignore[reportArgumentType]
 
             print(
-                f"Gen {gen:4d} | best: {gen_best:6.2f} | mean: {gen_mean:6.2f} | best_ever: {best_ever:6.2f}"
+                f"Gen {gen:4d} | best: {gen_best:6.2f} | mean: {gen_mean:6.2f} | best_ever: {best_ever:6.2f} | sigma: {es.sigma:.4f}"
             )
 
             if gen % 100 == 0 and gen > 0:
                 np.save(f"checkpoint_{gen}.npy", es.result.xbest)  # type: ignore[reportArgumentType]
+                with open("cmaes_state.pkl", "wb") as f:
+                    pickle.dump(es, f)
 
             gen += 1
 
