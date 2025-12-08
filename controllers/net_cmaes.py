@@ -150,7 +150,7 @@ if __name__ == "__main__":
 
     NUM_CORES = 63
     POPULATION_SIZE = 64
-    NUM_SEGMENTS = 300
+    NUM_SEGMENTS = 50
     MAX_GENERATIONS = 2000
     MODEL_PATH = Path("./models/tinyphysics.onnx")
     DATA_PATH = Path("./data")
