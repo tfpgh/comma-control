@@ -1,12 +1,11 @@
-import numpy as np
-
-from tinyphysics import FuturePlan, State
-
-from controllers import BaseController
 from pathlib import Path
 
+import numpy as np
 
-INPUT_LAYER_SIZE = 8  # Changing requires adding or removing actual inputs
+from controllers import BaseController
+from tinyphysics import FuturePlan, State
+
+INPUT_LAYER_SIZE = 9  # Changing requires adding or removing actual inputs
 HIDDEN_LAYER_SIZE = 12
 NUM_PARAMS = (
     INPUT_LAYER_SIZE * HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + 1
@@ -60,17 +59,24 @@ class Controller(BaseController):
         error_deriv = error - self.prev_error
         self.error_integral = np.clip(self.error_integral + error, -5, 5)
 
+        # target future delta
+        future_target_mean = np.mean(future_plan.lataccel[:10])
+        target_delta = future_target_mean - target_lataccel
+
         # build input features
+        # here I normalize them to try to make learning faster
+        # not sure this does much...
         x = np.array(
             [
-                error,
-                error_deriv,
-                self.error_integral,
-                target_lataccel,
-                state.v_ego,
-                state.a_ego,
-                state.roll_lataccel,
-                self.prev_action,
+                error,  # ~[-5, 5]
+                error_deriv,  # small
+                self.error_integral / 5.0,  # [-1, 1]
+                target_lataccel / 5.0,  # [-1, 1]
+                state.v_ego / 30.0,  # [0,1.2]
+                state.a_ego / 4.0,  # [-1,1]
+                state.roll_lataccel / 2.0,  # [-0.85,0.85]
+                self.prev_action / 2.0,  # [-1,1]
+                target_delta / 2.0,
             ]
         )
 
@@ -133,8 +139,9 @@ def evaluate(args: tuple[np.ndarray, int, int]) -> float:
 
 
 if __name__ == "__main__":
-    import cma
     from multiprocessing import Pool
+
+    import cma
 
     NUM_CORES = 63
     POPULATION_SIZE = 64
