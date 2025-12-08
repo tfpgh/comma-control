@@ -60,7 +60,12 @@ class Controller(BaseController):
         self.error_integral = np.clip(self.error_integral + error, -5, 5)
 
         # target future delta
-        future_target_mean = np.mean(future_plan.lataccel[:10])
+        # it can be empty at the end of the run
+        if future_plan.lataccel:
+            future_target_mean = np.mean(future_plan.lataccel[:10])
+        else:
+            future_target_mean = target_lataccel
+
         target_delta = future_target_mean - target_lataccel
 
         # build input features
