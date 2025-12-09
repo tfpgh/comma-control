@@ -5,3 +5,4 @@ models/tinyphysics_*.onnx
 *.swp
 venv/
 *.npy
+*.pt
