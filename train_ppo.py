@@ -264,7 +264,8 @@ class BatchedSimulator:
             self.session.run_with_iobinding(self.io_binding)
 
             ort_output = self.io_binding.get_outputs()[0]
-            logits = torch.from_dlpack(ort_output)
+            logits = torch.from_numpy(ort_output.numpy()).to(self.device)
+
         else:
             states_np = states_input.cpu().numpy().astype(np.float32)
             tokens_np = tokens_input.cpu().numpy().astype(np.int64)
