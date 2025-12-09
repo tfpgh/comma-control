@@ -40,7 +40,7 @@ class Config:
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
     update_epochs: int = 10
-    minibatch_size: int = 2048
+    minibatch_size: int = 8192
 
     # Training
     total_iterations: int = 500
@@ -83,6 +83,8 @@ class BatchedSimulator:
         print(f"Loading {len(data_files)} CSV files")
         self._load_data(data_files)
         print(f"Data shape: {self.all_data.shape}")
+
+        self.io_binding = self.session.io_binding()
 
     def _load_data(self, data_files: list[Path]) -> None:
         all_data = []
@@ -234,12 +236,43 @@ class BatchedSimulator:
             self.bins, ctx_lataccel.contiguous().clamp(*LATACCEL_RANGE)
         )
 
-        # Run ONNX (on CPU for now)
-        states_np = states_input.cpu().numpy().astype(np.float32)
-        tokens_np = tokens_input.cpu().numpy().astype(np.int64)
+        if self.device == "cuda":
+            states_input = states_input.contiguous()
+            tokens_input = tokens_input.to(torch.int64).contiguous()
 
-        logits = self.session.run(None, {"states": states_np, "tokens": tokens_np})[0]
-        logits = torch.tensor(logits, device=self.device)
+            self.io_binding.clear_binding_inputs()
+            self.io_binding.clear_binding_outputs()
+
+            self.io_binding.bind_input(
+                "states",
+                "cuda",
+                0,
+                np.float32,
+                tuple(states_input.shape),
+                states_input.data_ptr(),
+            )
+            self.io_binding.bind_input(
+                "tokens",
+                "cuda",
+                0,
+                np.int64,
+                tuple(tokens_input.shape),
+                tokens_input.data_ptr(),
+            )
+            self.io_binding.bind_output("output", "cuda")
+
+            self.session.run_with_iobinding(self.io_binding)
+
+            ort_output = self.io_binding.get_outputs()[0]
+            logits = torch.from_dlpack(ort_output)
+        else:
+            states_np = states_input.cpu().numpy().astype(np.float32)
+            tokens_np = tokens_input.cpu().numpy().astype(np.int64)
+
+            logits = self.session.run(None, {"states": states_np, "tokens": tokens_np})[
+                0
+            ]
+            logits = torch.tensor(logits, device=self.device)
 
         probs = torch.softmax(logits[:, -1, :] / 0.8, dim=-1)
         samples = torch.multinomial(probs, 1).squeeze(-1)
@@ -435,6 +468,11 @@ def train() -> None:
         print(
             f"Iter {iter:3d} | cost: {total_cost:7.2f} | best_cost: {best_cost:7.2f} | lat: {lat_cost:6.2f} | jerk: {jerk_cost:6.2f} | entropy: {entropy.item():.3f}"  # type: ignore[reportPossiblyUnboundVariable]
         )
+
+        if iter % 10 == 0:
+            print(
+                f"  policy_loss: {policy_loss.item():.4f} | value_loss: {value_loss.item():.4f}"  # type: ignore[reportPossiblyUnboundVariable]
+            )
 
         if iter % 50 == 0 and iter > 0:
             torch.save(model.state_dict(), f"checkpoint_{iter}.pt")
