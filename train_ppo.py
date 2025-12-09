@@ -23,7 +23,7 @@ ACC_G = 9.81
 @dataclass
 class Config:
     # Environment
-    batch_size: int = 5000
+    batch_size: int = 200
     rollout_steps: int = COST_END_IDX - CONTEXT_LENGTH
     obs_dim: int = 12
     batch_truncation_length: int = 550
