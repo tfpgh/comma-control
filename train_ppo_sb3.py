@@ -27,7 +27,7 @@ ACC_G = 9.81
 OBS_DIM = 22
 
 # Default SB3 training setup (adjust for hardware)
-TOTAL_TIMESTEPS = 5_000_000
+TOTAL_TIMESTEPS = 10_000_000
 NUM_ENVS = 62
 N_STEPS = 2048
 MINI_BATCHES = 8
