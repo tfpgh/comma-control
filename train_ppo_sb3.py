@@ -326,27 +326,17 @@ def make_vec_env(config: EnvConfig, num_envs: int, seed: int) -> SubprocVecEnv:
 
 
 class CostLoggingCallback(BaseCallback):
-    def __init__(self, verbose: int = 0) -> None:
-        super().__init__(verbose)
-        self.episode_counter = 0
+    def __init__(self) -> None:
+        super().__init__(verbose=0)
 
     def _on_step(self) -> bool:
         infos = self.locals.get("infos", [])
         for info in infos:
             if "episode_total_cost" in info:
-                self.episode_counter += 1
-                total_cost = info["episode_total_cost"]
-                lat_cost = info["episode_lat_cost"]
-                jerk_cost = info["episode_jerk_cost"]
-                steps = info["episode_steps"]
-                self.logger.record("cost/total", total_cost)
-                self.logger.record("cost/lat", lat_cost)
-                self.logger.record("cost/jerk", jerk_cost)
-                self.logger.record("cost/steps", steps)
-                if self.verbose > 0:
-                    print(
-                        f"Episode {self.episode_counter:05d} | total: {total_cost:7.2f} | lat: {lat_cost:6.2f} | jerk: {jerk_cost:6.2f} | steps: {steps:4d} | timestep: {self.num_timesteps}"
-                    )
+                self.logger.record("cost/total", info["episode_total_cost"])
+                self.logger.record("cost/lat", info["episode_lat_cost"])
+                self.logger.record("cost/jerk", info["episode_jerk_cost"])
+                self.logger.record("cost/steps", info["episode_steps"])
         return True
 
 
@@ -383,7 +373,7 @@ def train_sb3() -> None:
         device="cpu",
     )
 
-    callback = CostLoggingCallback(verbose=1)
+    callback = CostLoggingCallback()
     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback)
     model.save(OUTPUT_PATH)
     vec_env.close()
