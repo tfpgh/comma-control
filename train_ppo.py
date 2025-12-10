@@ -36,7 +36,7 @@ class Config:
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
-    entropy_coef: float = 0.02
+    entropy_coef: float = 0.05
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
     update_epochs: int = 5
@@ -286,7 +286,8 @@ class ActorCritic(nn.Module):
 
     def forward(self, obs):
         h = self.shared(obs)
-        return self.actor_mean(h), self.actor_logstd, self.critic(h)
+        logstd = torch.clamp(self.actor_logstd, min=-1.0)
+        return self.actor_mean(h), logstd, self.critic(h)
 
     def get_action(self, obs, deterministic=False):
         mean, logstd, value = self.forward(obs)
