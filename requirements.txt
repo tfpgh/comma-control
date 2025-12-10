@@ -6,3 +6,5 @@ seaborn==0.13.2
 tqdm
 cma==4.4.1
 torch
+stable-baselines3
+gymnasium
