@@ -24,14 +24,14 @@ STEER_RANGE = (-2.0, 2.0)
 MAX_ACC_DELTA = 0.5
 DEL_T = 0.1
 ACC_G = 9.81
-OBS_DIM = 22
+OBS_DIM = 10
 
 # Default SB3 training setup (adjust for hardware)
 TOTAL_TIMESTEPS = 10_000_000
 NUM_ENVS = 62
 N_STEPS = 2048
 MINI_BATCHES = 8
-LEARNING_RATE = 3e-4
+LEARNING_RATE = 1e-3
 N_EPOCHS = 10
 OUTPUT_PATH = "ppo_sb3"
 
@@ -138,7 +138,9 @@ class TinyPhysicsEnv(gym.Env):
 
         lataccel_cost = (error**2) * 100.0
         jerk_cost = (jerk**2) * 100.0
-        reward = -((lataccel_cost * 50.0 + jerk_cost) / self.config.reward_scale)
+
+        base_reward = 100.0
+        reward = base_reward - (lataccel_cost * 50.0 + jerk_cost) / 100.0
 
         self.prev_error = error.unsqueeze(0)
         self.error_integral = torch.clamp(self.error_integral + error, -5, 5)
@@ -264,40 +266,19 @@ class TinyPhysicsEnv(gym.Env):
         future_near, future_near_std = self._window_stats(idx + 1, end1, target)
         future_mid, future_mid_std = self._window_stats(idx + 6, end2, target)
 
-        prev_lataccel = self.lataccel_history[idx - 1]
-        lataccel_delta = self.current_lataccel - prev_lataccel
-        lat_hist = [self.lataccel_history[max(idx - k, 0)] for k in range(1, 5)]
-
-        progress = float(
-            max(
-                0.0,
-                min(
-                    1.0, (idx - CONTROL_START_IDX) / (COST_END_IDX - CONTROL_START_IDX)
-                ),
-            )
-        )
-
+        # Simplified observation space (10 features, matching CMAES)
         obs = torch.stack(
             [
-                error / 5.0,
-                error_deriv / 2.0,
-                self.error_integral.squeeze(0) / 5.0,
-                target / 5.0,
-                v_ego / 30.0,
-                a_ego / 4.0,
-                roll / 2.0,
-                prev_action / 2.0,
-                prev_prev_action / 2.0,
-                self.prev_error.squeeze(0) / 5.0,
-                future_near / 5.0,
-                future_mid / 5.0,
-                self.current_lataccel / 5.0,
-                lataccel_delta / 5.0,
-                action_delta / 2.0,
-                future_near_std / 5.0,
-                future_mid_std / 5.0,
-                torch.tensor(progress, device=self.device),
-                *[hist / 5.0 for hist in lat_hist],
+                error / 5.0,  # 1. Error
+                error_deriv / 2.0,  # 2. Error derivative
+                self.error_integral.squeeze(0) / 5.0,  # 3. Error integral
+                target / 5.0,  # 4. Target lataccel
+                v_ego / 30.0,  # 5. Ego velocity
+                a_ego / 4.0,  # 6. Ego acceleration
+                roll / 2.0,  # 7. Roll lataccel
+                prev_action / 2.0,  # 8. Previous action
+                future_near / 5.0,  # 9. Future near target
+                future_mid / 5.0,  # 10. Future mid target
             ]
         )
         return obs.detach().cpu().numpy().astype(np.float32)
@@ -351,7 +332,7 @@ def train_sb3() -> None:
     )
 
     policy_kwargs = dict(
-        net_arch=dict(pi=[256, 256, 256], vf=[256, 256, 256]),
+        net_arch=dict(pi=[128, 128], vf=[128, 128]),  # Simplified from [256,256,256]
         activation_fn=torch.nn.Tanh,
     )
 
@@ -365,7 +346,7 @@ def train_sb3() -> None:
         gamma=0.99,
         gae_lambda=0.95,
         clip_range=0.2,
-        ent_coef=0.0,
+        ent_coef=0.01,
         max_grad_norm=0.5,
         policy_kwargs=policy_kwargs,
         verbose=1,
