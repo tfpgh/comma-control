@@ -136,7 +136,7 @@ def evaluate(args: tuple[np.ndarray, int, int]) -> float:
 
 
 if __name__ == "__main__":
-    print("CMA-ES Run 2: 10 -> 20 -> 1")
+    print("CMA-ES Run 5: 18 -> 16 -> 1 (10 future points)")
 
     import pickle
     from multiprocessing import Pool
