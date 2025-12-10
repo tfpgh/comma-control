@@ -27,9 +27,9 @@ OBS_DIM = 22
 
 # Default SB3 training setup (adjust for hardware)
 TOTAL_TIMESTEPS = 5_000_000
-NUM_ENVS = 16
+NUM_ENVS = 64
 N_STEPS = 2048
-BATCH_SIZE = 8_192
+BATCH_SIZE = 65_536
 LEARNING_RATE = 3e-4
 N_EPOCHS = 10
 OUTPUT_PATH = "ppo_sb3"
@@ -304,13 +304,15 @@ def make_vec_env(config: EnvConfig, num_envs: int, seed: int) -> SubprocVecEnv:
 
 
 def train_sb3() -> None:
-    device = "cuda" if torch.cuda.is_available() else "cpu"
     seed = 0
     config = EnvConfig(seed=seed)
     vec_env = make_vec_env(config, num_envs=NUM_ENVS, seed=seed)
+    print(
+        f"Training PPO on CPU with {NUM_ENVS} envs, n_steps={N_STEPS}, batch_size={BATCH_SIZE}"
+    )
 
     policy_kwargs = dict(
-        net_arch=[dict(pi=[256, 256, 256], vf=[256, 256, 256])],
+        net_arch=dict(pi=[256, 256, 256], vf=[256, 256, 256]),
         activation_fn=torch.nn.Tanh,
     )
 
@@ -329,7 +331,7 @@ def train_sb3() -> None:
         policy_kwargs=policy_kwargs,
         verbose=1,
         seed=seed,
-        device=device,
+        device="cpu",
     )
 
     model.learn(total_timesteps=TOTAL_TIMESTEPS)
