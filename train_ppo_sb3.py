@@ -27,9 +27,9 @@ OBS_DIM = 22
 
 # Default SB3 training setup (adjust for hardware)
 TOTAL_TIMESTEPS = 5_000_000
-NUM_ENVS = 32
+NUM_ENVS = 63
 N_STEPS = 2048
-BATCH_SIZE = 16_384
+BATCH_SIZE = 32_768
 LEARNING_RATE = 3e-4
 N_EPOCHS = 10
 OUTPUT_PATH = "ppo_sb3"
