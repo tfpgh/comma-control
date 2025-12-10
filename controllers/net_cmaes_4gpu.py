@@ -10,10 +10,10 @@ from queue import Empty
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 512
+POPULATION_SIZE = 768
 NUM_SEGMENTS = 128
 MAX_GENERATIONS = 10000
-INPUT_SIZE = 18
+INPUT_SIZE = 20
 HIDDEN_SIZE = 24
 
 # Physics Constants
@@ -213,7 +213,24 @@ class GPUWorker(mp.Process):
                 pad = targets[:, idx_now : idx_now + 1].repeat(1, missing)
                 raw_future = torch.cat([raw_future, pad], dim=1)
 
-            # Input Stack (18 Dim)
+            # Input Stack (20 Dim)
+            # Fetch past actions consistently from history
+            u_t1 = (
+                action_history[:, step - 1].unsqueeze(1)
+                if step >= 1
+                else torch.zeros_like(current_lataccel.unsqueeze(1))
+            )
+            u_t2 = (
+                action_history[:, step - 2].unsqueeze(1)
+                if step >= 2
+                else torch.zeros_like(u_t1)
+            )
+            u_t3 = (
+                action_history[:, step - 3].unsqueeze(1)
+                if step >= 3
+                else torch.zeros_like(u_t1)
+            )
+
             x = torch.cat(
                 [
                     error / 5.0,
@@ -223,7 +240,9 @@ class GPUWorker(mp.Process):
                     batch_data[:, idx_now, 1:2] / 30.0,
                     batch_data[:, idx_now, 2:3] / 4.0,
                     batch_data[:, idx_now, 0:1] / 2.0,
-                    prev_action / 2.0,
+                    u_t1 / 2.0,
+                    u_t2 / 2.0,
+                    u_t3 / 2.0,
                     raw_future / 5.0,  # (Batch, 10)
                 ],
                 dim=1,
