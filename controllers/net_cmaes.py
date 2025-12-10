@@ -146,10 +146,10 @@ if __name__ == "__main__":
 
     import cma
 
-    NUM_CORES = 63
-    POPULATION_SIZE = 63
+    NUM_CORES = 35
+    POPULATION_SIZE = 35
     NUM_SEGMENTS = 100
-    MAX_GENERATIONS = 2000
+    MAX_GENERATIONS = 3000
     MODEL_PATH = Path("./models/tinyphysics.onnx")
     DATA_PATH = Path("./data")
 
