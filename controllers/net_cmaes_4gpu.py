@@ -10,8 +10,8 @@ from queue import Empty
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 512   # Reduced from 1024 for faster updates
-NUM_SEGMENTS = 128      # Increased from 64 for lower variance (more accurate score)
+POPULATION_SIZE = 512  # Balanced for faster updates
+NUM_SEGMENTS = 128  # High segment count for reliable evaluation
 MAX_GENERATIONS = 10000
 INPUT_SIZE = 10
 HIDDEN_SIZE = 12
@@ -50,7 +50,6 @@ class GPUWorker(mp.Process):
         opts = ort.SessionOptions()
         opts.graph_optimization_level = ort.GraphOptimizationLevel.ORT_ENABLE_ALL
 
-        # Force CUDA - Fail if not available
         try:
             self.session = ort.InferenceSession(
                 self.model_path,
@@ -61,19 +60,16 @@ class GPUWorker(mp.Process):
             print(f"[GPU {self.device_id}] FAILED to load CUDA provider: {e}")
             return
 
-        # Verify we are actually using CUDA
         active_providers = self.session.get_providers()
         if "CUDAExecutionProvider" not in active_providers:
             print(
                 f"[GPU {self.device_id}] WARNING: ORT fallback to {active_providers}. Performance will be terrible."
             )
 
-        # 4. Introspect Model for Names (Safety Fix)
+        # 4. Introspect Model for Names
         self.input_names = [i.name for i in self.session.get_inputs()]
         self.output_names = [o.name for o in self.session.get_outputs()]
 
-        # Expecting 'states' and 'tokens' usually, but let's map by order or name
-        # Standard tinyphysics.onnx: inputs=['states', 'tokens'], output=['logits' or similar]
         self.name_states = next(
             (n for n in self.input_names if "state" in n), self.input_names[0]
         )
@@ -97,9 +93,8 @@ class GPUWorker(mp.Process):
         self.onnx_token_buffer = torch.zeros(
             (self.batch_size, 20), dtype=torch.int64, device=self.device
         )
-        # Output Buffer
-        # Model outputs logits for the entire context window (20 steps)
-        # Shape: (Batch, 20, 1024) float32
+
+        # Output Buffer (Batch, 20, 1024) - matches model output shape
         self.onnx_output_buffer = torch.zeros(
             (self.batch_size, 20, VOCAB_SIZE), dtype=torch.float32, device=self.device
         )
@@ -253,7 +248,7 @@ class GPUWorker(mp.Process):
                 self.bins, ctx_lataccel.contiguous(), out=self.onnx_token_buffer
             )
 
-            # Bind Inputs (Pointers are stable, but binding is cheap and safe to repeat)
+            # Bind Inputs
             self.binding.bind_input(
                 name=self.name_states,
                 device_type="cuda",
@@ -271,15 +266,14 @@ class GPUWorker(mp.Process):
                 buffer_ptr=self.onnx_token_buffer.data_ptr(),
             )
 
-            # Sync to ensure Torch writes are done before ORT reads
+            # Sync to ensure Torch writes are done
             torch.cuda.synchronize(self.device)
 
             # Run Inference
             self.session.run_with_iobinding(self.binding)
 
             # Post-process
-            # We only care about the last timestep (-1)
-            # Buffer is (Batch, 20, 1024) -> We want (Batch, 1024)
+            # Select last timestep (-1) from the (Batch, 20, 1024) output
             logits = self.onnx_output_buffer[:, -1, :].view(batch_size, VOCAB_SIZE)
             probs = torch.softmax(logits / 0.8, dim=-1)
             samples = torch.multinomial(probs, 1).squeeze(-1)
@@ -323,6 +317,7 @@ def main():
         p.start()
         workers.append(p)
 
+    # CMA Setup
     num_params = (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + HIDDEN_SIZE + 1
     x0 = np.random.randn(num_params) * 0.1
     es = cma.CMAEvolutionStrategy(
@@ -337,15 +332,18 @@ def main():
             start_time = time.time()
             solutions = es.ask()
 
+            # Split Params
             chunk_size = len(solutions) // NUM_GPUS
             chunks = [
                 solutions[i : i + chunk_size]
                 for i in range(0, len(solutions), chunk_size)
             ]
 
+            # Dispatch
             for i in range(NUM_GPUS):
                 task_queues[i].put((np.stack(chunks[i]), 0))
 
+            # Collect
             all_costs = [None] * NUM_GPUS
             for _ in range(NUM_GPUS):
                 device_id, costs = result_queue.get()
@@ -358,19 +356,15 @@ def main():
             gen_mean = np.mean(flat_costs)
             duration = time.time() - start_time
 
-                        if gen_best < best_ever:
+            if gen_best < best_ever:
+                best_ever = gen_best
+                np.save("4gpu_best_params.npy", es.result.xbest)
 
-                            best_ever = gen_best
+            print(
+                f"Gen {es.countiter:4d} | Best: {gen_best:6.2f} | Mean: {gen_mean:6.2f} | BestEver: {best_ever:6.2f} | Sigma: {es.sigma:.4f} | Time: {duration:.2f}s"
+            )
 
-                            np.save("4gpu_best_params.npy", es.result.xbest)
-
-                            
-
-                        print(f"Gen {es.countiter:4d} | Best: {gen_best:6.2f} | Mean: {gen_mean:6.2f} | BestEver: {best_ever:6.2f} | Sigma: {es.sigma:.4f} | Time: {duration:.2f}s")
-
-                        
-
-                        if es.countiter % 50 == 0:
+            if es.countiter % 50 == 0:
                 np.save(f"4gpu_checkpoint_{es.countiter}.npy", es.result.xbest)
 
     except KeyboardInterrupt:
