@@ -10,10 +10,10 @@ from queue import Empty
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 768
-NUM_SEGMENTS = 128
+POPULATION_SIZE = 768  # Increased for robust search
+NUM_SEGMENTS = 128  # High reliability
 MAX_GENERATIONS = 10000
-INPUT_SIZE = 20
+INPUT_SIZE = 20  # 18 + 2 Past Actions
 HIDDEN_SIZE = 24
 
 # Physics Constants
@@ -94,7 +94,7 @@ class GPUWorker(mp.Process):
             (self.batch_size, 20), dtype=torch.int64, device=self.device
         )
 
-        # Output Buffer (Batch, 20, 1024) - matches model output shape
+        # Output Buffer (Batch, 20, 1024)
         self.onnx_output_buffer = torch.zeros(
             (self.batch_size, 20, VOCAB_SIZE), dtype=torch.float32, device=self.device
         )
@@ -125,8 +125,8 @@ class GPUWorker(mp.Process):
                     break
 
                 params, seed = task
-                costs = self.rollout_batch(params)
-                self.result_queue.put((self.device_id, costs))
+                costs, lat, jerk = self.rollout_batch(params)
+                self.result_queue.put((self.device_id, costs, lat, jerk))
 
             except Exception as e:
                 print(f"[GPU {self.device_id}] CRITICAL ERROR: {e}")
@@ -188,7 +188,7 @@ class GPUWorker(mp.Process):
 
         prev_error = torch.zeros(batch_size, 1, device=self.device)
         error_integral = torch.zeros(batch_size, 1, device=self.device)
-        prev_action = torch.zeros(batch_size, 1, device=self.device)
+
         targets = batch_data[:, :, 3]
 
         # 4. Simulation Loop
@@ -199,22 +199,17 @@ class GPUWorker(mp.Process):
             error_deriv = error - prev_error
             error_integral = torch.clamp(error_integral + error, -5.0, 5.0)
 
-            # --- Future Window (Raw Points) ---
-            # We want the next 10 points.
-            # If we are near the end, we pad with the current target.
-
-            # 1. Get raw slice
+            # Future Window (Raw Points)
             end_idx = min(step + 11, 550)
             raw_future = targets[:, step + 1 : end_idx]
 
-            # 2. Pad if needed (at end of episode)
+            # Pad if needed
             missing = 10 - raw_future.shape[1]
             if missing > 0:
                 pad = targets[:, idx_now : idx_now + 1].repeat(1, missing)
                 raw_future = torch.cat([raw_future, pad], dim=1)
 
-            # Input Stack (20 Dim)
-            # Fetch past actions consistently from history
+            # Fetch past actions consistently
             u_t1 = (
                 action_history[:, step - 1].unsqueeze(1)
                 if step >= 1
@@ -255,13 +250,12 @@ class GPUWorker(mp.Process):
             action = (out * 2.0).view(batch_size, 1)
 
             prev_error = error
-            prev_action = action
             action_history[:, step] = action.squeeze()
 
             # --- Physics (IO Binding) ---
             start_ctx = step - CONTEXT_LENGTH
 
-            # Fill buffers (In-place on GPU)
+            # Fill buffers
             ctx_actions = action_history[:, start_ctx:step].unsqueeze(2)
             ctx_states = batch_data[:, start_ctx:step, 0:3]
             torch.cat([ctx_actions, ctx_states], dim=2, out=self.onnx_state_buffer)
@@ -271,7 +265,7 @@ class GPUWorker(mp.Process):
                 self.bins, ctx_lataccel.contiguous(), out=self.onnx_token_buffer
             )
 
-            # Bind Inputs
+            # Bind
             self.binding.bind_input(
                 name=self.name_states,
                 device_type="cuda",
@@ -289,14 +283,10 @@ class GPUWorker(mp.Process):
                 buffer_ptr=self.onnx_token_buffer.data_ptr(),
             )
 
-            # Sync to ensure Torch writes are done
             torch.cuda.synchronize(self.device)
-
-            # Run Inference
             self.session.run_with_iobinding(self.binding)
 
             # Post-process
-            # Select last timestep (-1) from the (Batch, 20, 1024) output
             logits = self.onnx_output_buffer[:, -1, :].view(batch_size, VOCAB_SIZE)
             probs = torch.softmax(logits / 0.8, dim=-1)
             samples = torch.multinomial(probs, 1).squeeze(-1)
@@ -320,7 +310,12 @@ class GPUWorker(mp.Process):
         jerk_cost = torch.mean(jerk**2, dim=1) * 100.0
         total_cost = (lat_cost * 50.0) + jerk_cost
 
-        return torch.mean(total_cost.view(pop_size, n_segs), dim=1).cpu().numpy()
+        # Aggregate
+        costs = torch.mean(total_cost.view(pop_size, n_segs), dim=1).cpu().numpy()
+        mean_lat = torch.mean(lat_cost).cpu().item()
+        mean_jerk = torch.mean(jerk_cost).cpu().item()
+
+        return costs, mean_lat, mean_jerk
 
 
 def main():
@@ -340,7 +335,6 @@ def main():
         p.start()
         workers.append(p)
 
-    # CMA Setup
     num_params = (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + HIDDEN_SIZE + 1
     x0 = np.random.randn(num_params) * 0.1
     es = cma.CMAEvolutionStrategy(
@@ -355,24 +349,29 @@ def main():
             start_time = time.time()
             solutions = es.ask()
 
-            # Split Params
             chunk_size = len(solutions) // NUM_GPUS
             chunks = [
                 solutions[i : i + chunk_size]
                 for i in range(0, len(solutions), chunk_size)
             ]
 
-            # Dispatch
             for i in range(NUM_GPUS):
                 task_queues[i].put((np.stack(chunks[i]), 0))
 
-            # Collect
             all_costs = [None] * NUM_GPUS
+            total_lat = 0.0
+            total_jerk = 0.0
+
             for _ in range(NUM_GPUS):
-                device_id, costs = result_queue.get()
+                device_id, costs, lat, jerk = result_queue.get()
                 all_costs[device_id] = costs
+                total_lat += lat
+                total_jerk += jerk
 
             flat_costs = np.concatenate(all_costs)
+            avg_lat = total_lat / NUM_GPUS
+            avg_jerk = total_jerk / NUM_GPUS
+
             es.tell(solutions, flat_costs)
 
             gen_best = np.min(flat_costs)
@@ -384,7 +383,9 @@ def main():
                 np.save("4gpu_best_params.npy", es.result.xbest)
 
             print(
-                f"Gen {es.countiter:4d} | Best: {gen_best:6.2f} | Mean: {gen_mean:6.2f} | BestEver: {best_ever:6.2f} | Sigma: {es.sigma:.4f} | Time: {duration:.2f}s"
+                f"Gen {es.countiter:4d} | Best: {gen_best:6.2f} | Mean: {gen_mean:6.2f} | "
+                f"BestEver: {best_ever:6.2f} | Lat: {avg_lat:5.2f} | Jerk: {avg_jerk:5.2f} | "
+                f"Sigma: {es.sigma:.4f} | Time: {duration:.2f}s"
             )
 
             if es.countiter % 50 == 0:
