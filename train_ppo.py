@@ -188,6 +188,10 @@ class BatchedSimulator:
 
     def step(self, actions: Tensor) -> tuple[Tensor, Tensor, bool]:
         actions = torch.clamp(actions, STEER_RANGE[0], STEER_RANGE[1])
+
+        prev_actions = self.action_history[:, self.step_idx - 1]
+        actions = torch.clamp(actions, prev_actions - 0.15, prev_actions + 0.15)
+
         self.action_history[:, self.step_idx] = actions
 
         # Physics step
