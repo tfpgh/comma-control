@@ -45,7 +45,7 @@ class Config:
     reward_scale: float = 4000.0
 
     # Training
-    total_iterations: int = 500
+    total_iterations: int = 2000
 
     # Paths
     model_path: str = "./models/tinyphysics.onnx"
@@ -94,7 +94,7 @@ class BatchedSimulator:
         skipped = 0
         for f in data_files:
             df = pd.read_csv(f)
-            
+
             if len(df) < self.config.batch_truncation_length:
                 skipped += 1
                 continue
@@ -353,7 +353,7 @@ def train() -> None:
     for iter in range(config.total_iterations):
         # Entropy decay
         ent_coef = config.entropy_coef * (1 - iter / config.total_iterations)
-        ent_coef = max(ent_coef, 0.005)
+        ent_coef = max(ent_coef, 0.0005)
 
         obs_buf = []
         act_buf = []
@@ -449,11 +449,7 @@ def train() -> None:
                 v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
                 value_loss = 0.5 * v_loss_max.mean()
 
-                loss = (
-                    policy_loss
-                    + config.value_coef * value_loss
-                    - ent_coef * entropy
-                )
+                loss = policy_loss + config.value_coef * value_loss - ent_coef * entropy
 
                 optimizer.zero_grad()
                 loss.backward()
@@ -476,7 +472,7 @@ def train() -> None:
                 f"  policy_loss: {policy_loss.item():.4f} | value_loss: {value_loss.item():.4f}"  # type: ignore[reportPossiblyUnboundVariable]
             )
 
-        if iter % 50 == 0 and iter > 0:
+        if iter % 200 == 0 and iter > 0:
             torch.save(model.state_dict(), f"checkpoint_{iter}.pt")
 
 
