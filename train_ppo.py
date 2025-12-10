@@ -18,21 +18,22 @@ STEER_RANGE = (-2.0, 2.0)
 MAX_ACC_DELTA = 0.5
 DEL_T = 0.1
 ACC_G = 9.81
+ACTION_SCALE = STEER_RANGE[1]
 
 
 @dataclass
 class Config:
     # Environment
-    batch_size: int = 1024
+    batch_size: int = 2048
     rollout_steps: int = COST_END_IDX - CONTEXT_LENGTH
-    obs_dim: int = 12
+    obs_dim: int = 22
     batch_truncation_length: int = 550
 
     # Network
-    hidden_size: int = 128
+    hidden_size: int = 256
 
     # PPO
-    lr: float = 2e-5
+    lr: float = 3e-5
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -40,7 +41,7 @@ class Config:
     value_coef: float = 0.5
     value_clip_eps: float = 0.2
     max_grad_norm: float = 0.5
-    update_epochs: int = 3
+    update_epochs: int = 2
     minibatch_size: int = 4096
     reward_scale: float = 10000.0
 
@@ -170,19 +171,36 @@ class BatchedSimulator:
         # Previous actions
         prev_action = self.action_history[:, idx - 1]
         prev_prev_action = self.action_history[:, idx - 2] if idx >= 2 else prev_action
+        action_delta = prev_action - prev_prev_action
 
-        # Future
+        # Future stats
         end1 = min(idx + 6, self.max_steps)
         end2 = min(idx + 16, self.max_steps)
-        future_near = (
-            self.all_data[:, idx + 1 : end1, 3].mean(dim=1)
-            if end1 > idx + 1
-            else target
-        )
-        future_mid = (
-            self.all_data[:, idx + 6 : end2, 3].mean(dim=1)
-            if end2 > idx + 6
-            else target
+
+        def _window_stats(
+            start: int, end: int, fallback: Tensor
+        ) -> tuple[Tensor, Tensor]:
+            if end > start:
+                window = self.all_data[:, start:end, 3]
+                mean = window.mean(dim=1)
+                std = window.std(dim=1, unbiased=False)
+            else:
+                mean = fallback
+                std = torch.zeros_like(fallback)
+            return mean, std
+
+        future_near, future_near_std = _window_stats(idx + 1, end1, target)
+        future_mid, future_mid_std = _window_stats(idx + 6, end2, target)
+
+        # Lateral accel history
+        prev_lataccel = self.lataccel_history[:, idx - 1]
+        lataccel_delta = self.current_lataccel - prev_lataccel
+        lat_hist = [self.lataccel_history[:, max(idx - k, 0)] for k in range(1, 5)]
+
+        # Progress in rollout (0 before control window starts)
+        progress_value = (idx - CONTROL_START_IDX) / (COST_END_IDX - CONTROL_START_IDX)
+        progress = torch.full((self.n,), progress_value, device=self.device).clamp(
+            0.0, 1.0
         )
 
         return torch.stack(
@@ -199,6 +217,13 @@ class BatchedSimulator:
                 self.prev_error / 5.0,
                 future_near / 5.0,
                 future_mid / 5.0,
+                self.current_lataccel / 5.0,
+                lataccel_delta / 5.0,
+                action_delta / 2.0,
+                future_near_std / 5.0,
+                future_mid_std / 5.0,
+                progress,
+                *[hist / 5.0 for hist in lat_hist],
             ],
             dim=1,
         )
@@ -286,12 +311,21 @@ class BatchedSimulator:
         )
 
 
+LOG_STD_MIN = -1.5
+LOG_STD_MAX = 0.3
+SQUASH_EPS = 1e-6
+
+
 class ActorCritic(nn.Module):
     def __init__(self, obs_dim: int, hidden: int) -> None:
         super().__init__()
 
         self.shared = nn.Sequential(
             nn.Linear(obs_dim, hidden),
+            nn.LayerNorm(hidden),
+            nn.Tanh(),
+            nn.Linear(hidden, hidden),
+            nn.LayerNorm(hidden),
             nn.Tanh(),
             nn.Linear(hidden, hidden),
             nn.Tanh(),
@@ -304,39 +338,45 @@ class ActorCritic(nn.Module):
     def forward(self, obs):
         h = self.shared(obs)
         mean = self.actor_mean(h)
-        logstd = self.actor_logstd(h)
-        logstd = torch.clamp(logstd, min=-2.0, max=0.5)
-        return mean, logstd, self.critic(h)
+        logstd = torch.clamp(self.actor_logstd(h), min=LOG_STD_MIN, max=LOG_STD_MAX)
+        value = self.critic(h)
+        return mean, logstd, value
+
+    def _squash(self, raw_action: Tensor) -> tuple[Tensor, Tensor]:
+        squashed = torch.tanh(raw_action)
+        log_jacobian = torch.log1p(-squashed.pow(2) + SQUASH_EPS)
+        action = squashed * ACTION_SCALE
+        return action, log_jacobian
+
+    def _log_prob(self, raw_action: Tensor, mean: Tensor, logstd: Tensor) -> Tensor:
+        std = logstd.exp()
+        log_prob = -0.5 * (
+            ((raw_action - mean) / (std + 1e-8)) ** 2 + 2 * logstd + np.log(2 * np.pi)
+        )
+        _, log_jacobian = self._squash(raw_action)
+        log_prob = log_prob - log_jacobian - np.log(ACTION_SCALE)
+        return log_prob
 
     def get_action(self, obs, deterministic=False):
         mean, logstd, value = self.forward(obs)
-        std = logstd.exp()
-
         if deterministic:
-            action = mean
+            raw_action = mean
         else:
-            action = mean + std * torch.randn_like(mean)
+            raw_action = mean + logstd.exp() * torch.randn_like(mean)
 
-        action = torch.clamp(action, STEER_RANGE[0], STEER_RANGE[1])
-
-        log_prob = -0.5 * (
-            ((action - mean) / (std + 1e-8)) ** 2 + 2 * logstd + np.log(2 * np.pi)
-        )
+        action, _ = self._squash(raw_action)
+        log_prob = self._log_prob(raw_action, mean, logstd)
 
         return action.squeeze(-1), log_prob.squeeze(-1), value.squeeze(-1)
 
     def evaluate(self, obs, actions):
         mean, logstd, value = self.forward(obs)
-        std = logstd.exp()
+        scaled = torch.clamp(actions.unsqueeze(-1) / ACTION_SCALE, -1 + 1e-6, 1 - 1e-6)
+        pre_tanh = torch.atanh(scaled)
+        log_prob = self._log_prob(pre_tanh, mean, logstd)
+        entropy = (0.5 * (1 + np.log(2 * np.pi)) + logstd - np.log(ACTION_SCALE)).mean()
 
-        log_prob = -0.5 * (
-            ((actions.unsqueeze(-1) - mean) / (std + 1e-8)) ** 2
-            + 2 * logstd
-            + np.log(2 * np.pi)
-        )
-        entropy = 0.5 * (1 + np.log(2 * np.pi) + 2 * logstd)
-
-        return log_prob.squeeze(-1), value.squeeze(-1), entropy.mean()
+        return log_prob.squeeze(-1), value.squeeze(-1), entropy
 
 
 def train() -> None:
@@ -353,7 +393,7 @@ def train() -> None:
     for iter in range(config.total_iterations):
         # Entropy decay
         ent_coef = config.entropy_coef * (1 - iter / config.total_iterations)
-        ent_coef = max(ent_coef, 0.01)
+        ent_coef = max(ent_coef, 0.05)
 
         obs_buf = []
         act_buf = []
