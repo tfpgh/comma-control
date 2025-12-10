@@ -10,9 +10,9 @@ import onnxruntime as ort
 import pandas as pd
 import torch
 from gymnasium import spaces
-from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import SubprocVecEnv
+from stable_baselines3.common.vec_env import SubprocVecEnv, VecNormalize, VecMonitor
+from sb3_contrib import RecurrentPPO
 
 # Shared constants with tinyphysics/train_ppo
 CONTEXT_LENGTH = 20
@@ -31,7 +31,7 @@ TOTAL_TIMESTEPS = 10_000_000
 NUM_ENVS = 62
 N_STEPS = 2048
 MINI_BATCHES = 8
-LEARNING_RATE = 1e-3
+LEARNING_RATE = 1e-4  # Reduced from 1e-3 to prevent policy collapse
 N_EPOCHS = 10
 OUTPUT_PATH = "ppo_sb3"
 
@@ -267,18 +267,19 @@ class TinyPhysicsEnv(gym.Env):
         future_mid, future_mid_std = self._window_stats(idx + 6, end2, target)
 
         # Simplified observation space (10 features, matching CMAES)
+        # RAW VALUES - VecNormalize will handle scaling automatically
         obs = torch.stack(
             [
-                error / 5.0,  # 1. Error
-                error_deriv / 2.0,  # 2. Error derivative
-                self.error_integral.squeeze(0) / 5.0,  # 3. Error integral
-                target / 5.0,  # 4. Target lataccel
-                v_ego / 30.0,  # 5. Ego velocity
-                a_ego / 4.0,  # 6. Ego acceleration
-                roll / 2.0,  # 7. Roll lataccel
-                prev_action / 2.0,  # 8. Previous action
-                future_near / 5.0,  # 9. Future near target
-                future_mid / 5.0,  # 10. Future mid target
+                error,  # 1. Error
+                error_deriv,  # 2. Error derivative
+                self.error_integral.squeeze(0),  # 3. Error integral
+                target,  # 4. Target lataccel
+                v_ego,  # 5. Ego velocity
+                a_ego,  # 6. Ego acceleration
+                roll,  # 7. Roll lataccel
+                prev_action,  # 8. Previous action
+                future_near,  # 9. Future near target
+                future_mid,  # 10. Future mid target
             ]
         )
         return obs.detach().cpu().numpy().astype(np.float32)
@@ -325,6 +326,10 @@ def train_sb3() -> None:
     seed = 0
     config = EnvConfig(seed=seed)
     vec_env = make_vec_env(config, num_envs=NUM_ENVS, seed=seed)
+
+    vec_env = VecMonitor(vec_env)
+    vec_env = VecNormalize(vec_env, norm_obs=True, norm_reward=True, clip_obs=10.0)
+
     buffer_size = N_STEPS * vec_env.num_envs
     batch_size = max(64, buffer_size // MINI_BATCHES)
     print(
@@ -336,8 +341,8 @@ def train_sb3() -> None:
         activation_fn=torch.nn.Tanh,
     )
 
-    model = PPO(
-        "MlpPolicy",
+    model = RecurrentPPO(
+        "MlpLstmPolicy",
         vec_env,
         learning_rate=LEARNING_RATE,
         n_steps=N_STEPS,
@@ -356,9 +361,15 @@ def train_sb3() -> None:
 
     callback = CostLoggingCallback()
     model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback)
+
+    # Save Model AND Normalization Statistics
     model.save(OUTPUT_PATH)
+    vec_env.save(f"{OUTPUT_PATH}_vecnormalize.pkl")
+
     vec_env.close()
-    print(f"Saved SB3 PPO model to {OUTPUT_PATH}")
+    print(
+        f"Saved SB3 PPO model to {OUTPUT_PATH} and stats to {OUTPUT_PATH}_vecnormalize.pkl"
+    )
 
 
 if __name__ == "__main__":

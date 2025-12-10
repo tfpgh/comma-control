@@ -8,3 +8,4 @@ cma==4.4.1
 torch
 stable-baselines3
 gymnasium
+sb3-contrib
