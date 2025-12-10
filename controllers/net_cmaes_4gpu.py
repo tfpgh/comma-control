@@ -10,11 +10,11 @@ from queue import Empty
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 512  # Balanced for faster updates
-NUM_SEGMENTS = 128  # High segment count for reliable evaluation
+POPULATION_SIZE = 512
+NUM_SEGMENTS = 128
 MAX_GENERATIONS = 10000
-INPUT_SIZE = 10
-HIDDEN_SIZE = 12
+INPUT_SIZE = 18
+HIDDEN_SIZE = 20
 
 # Physics Constants
 CONTEXT_LENGTH = 20
@@ -199,16 +199,21 @@ class GPUWorker(mp.Process):
             error_deriv = error - prev_error
             error_integral = torch.clamp(error_integral + error, -5.0, 5.0)
 
-            end_near = min(step + 5, 550)
-            future_near = targets[:, step + 1 : end_near].mean(dim=1, keepdim=True)
-            if step + 1 >= end_near:
-                future_near = targets[:, idx_now : idx_now + 1]
+            # --- Future Window (Raw Points) ---
+            # We want the next 10 points.
+            # If we are near the end, we pad with the current target.
 
-            end_mid = min(step + 15, 550)
-            future_mid = targets[:, step + 5 : end_mid].mean(dim=1, keepdim=True)
-            if step + 5 >= end_mid:
-                future_mid = targets[:, idx_now : idx_now + 1]
+            # 1. Get raw slice
+            end_idx = min(step + 11, 550)
+            raw_future = targets[:, step + 1 : end_idx]
 
+            # 2. Pad if needed (at end of episode)
+            missing = 10 - raw_future.shape[1]
+            if missing > 0:
+                pad = targets[:, idx_now : idx_now + 1].repeat(1, missing)
+                raw_future = torch.cat([raw_future, pad], dim=1)
+
+            # Input Stack (18 Dim)
             x = torch.cat(
                 [
                     error / 5.0,
@@ -219,8 +224,7 @@ class GPUWorker(mp.Process):
                     batch_data[:, idx_now, 2:3] / 4.0,
                     batch_data[:, idx_now, 0:1] / 2.0,
                     prev_action / 2.0,
-                    future_near / 5.0,
-                    future_mid / 5.0,
+                    raw_future / 5.0,  # (Batch, 10)
                 ],
                 dim=1,
             )
