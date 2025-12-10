@@ -32,17 +32,17 @@ class Config:
     hidden_size: int = 128
 
     # PPO
-    lr: float = 1e-4
+    lr: float = 5e-5
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
-    entropy_coef: float = 0.03
+    entropy_coef: float = 0.005
     value_coef: float = 0.5
     value_clip_eps: float = 0.2
     max_grad_norm: float = 0.5
     update_epochs: int = 5
     minibatch_size: int = 8192
-    reward_scale: float = 1000.0
+    reward_scale: float = 4000.0
 
     # Training
     total_iterations: int = 500
