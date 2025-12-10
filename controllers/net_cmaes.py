@@ -148,12 +148,12 @@ if __name__ == "__main__":
 
     NUM_CORES = 63
     POPULATION_SIZE = 63
-    NUM_SEGMENTS = 65
+    NUM_SEGMENTS = 100
     MAX_GENERATIONS = 2000
     MODEL_PATH = Path("./models/tinyphysics.onnx")
     DATA_PATH = Path("./data")
 
-    data_files = sorted(DATA_PATH.glob("*.csv"))
+    data_files = sorted(DATA_PATH.glob("*.csv"))[:5000]
     print(f"Found {len(data_files)} data files")
 
     # cmaes setup
