@@ -85,7 +85,10 @@ class GPUWorker(mp.Process):
         # Input Buffers (Reusable memory)
         self.onnx_state_buffer = torch.zeros((self.batch_size, 20, 4), dtype=torch.float32, device=self.device)
         self.onnx_token_buffer = torch.zeros((self.batch_size, 20), dtype=torch.int64, device=self.device)
-        self.onnx_output_buffer = torch.zeros((self.batch_size, 1, VOCAB_SIZE), dtype=torch.float32, device=self.device)
+        # Output Buffer
+        # Model outputs logits for the entire context window (20 steps)
+        # Shape: (Batch, 20, 1024) float32
+        self.onnx_output_buffer = torch.zeros((self.batch_size, 20, VOCAB_SIZE), dtype=torch.float32, device=self.device)
         
         # Setup Binding
         self.binding = self.session.io_binding()
@@ -241,7 +244,9 @@ class GPUWorker(mp.Process):
             self.session.run_with_iobinding(self.binding)
             
             # Post-process
-            logits = self.onnx_output_buffer.view(batch_size, VOCAB_SIZE)
+            # We only care about the last timestep (-1)
+            # Buffer is (Batch, 20, 1024) -> We want (Batch, 1024)
+            logits = self.onnx_output_buffer[:, -1, :].view(batch_size, VOCAB_SIZE)
             probs = torch.softmax(logits / 0.8, dim=-1)
             samples = torch.multinomial(probs, 1).squeeze(-1)
             pred_lataccel = self.bins[samples]
