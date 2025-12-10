@@ -11,6 +11,7 @@ import pandas as pd
 import torch
 from gymnasium import spaces
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import SubprocVecEnv
 
 # Shared constants with tinyphysics/train_ppo
@@ -27,7 +28,7 @@ OBS_DIM = 22
 
 # Default SB3 training setup (adjust for hardware)
 TOTAL_TIMESTEPS = 5_000_000
-NUM_ENVS = 64
+NUM_ENVS = 62
 N_STEPS = 2048
 BATCH_SIZE = 65_536
 LEARNING_RATE = 3e-4
@@ -104,6 +105,9 @@ class TinyPhysicsEnv(gym.Env):
         self.current_lataccel = self.lataccel_history[self.step_idx - 1].clone()
         self.prev_error = torch.zeros(1, device=self.device)
         self.error_integral = torch.zeros(1, device=self.device)
+        self.lataccel_accum = torch.zeros(1, device=self.device)
+        self.jerk_accum = torch.zeros(1, device=self.device)
+        self.episode_steps = 0
 
         obs = self._get_obs()
         return obs, {}
@@ -138,18 +142,36 @@ class TinyPhysicsEnv(gym.Env):
 
         self.prev_error = error.unsqueeze(0)
         self.error_integral = torch.clamp(self.error_integral + error, -5, 5)
+        self.lataccel_accum += lataccel_cost
+        self.jerk_accum += jerk_cost
+        self.episode_steps += 1
 
         self.step_idx += 1
         terminated = self.step_idx >= COST_END_IDX
         truncated = False
 
-        obs = self._get_obs()
         info = {
             "lataccel_cost": lataccel_cost.item(),
             "jerk_cost": jerk_cost.item(),
             "target_lataccel": target.item(),
             "current_lataccel": self.current_lataccel.item(),
         }
+
+        if terminated:
+            steps = max(self.episode_steps, 1)
+            lat_mean = (self.lataccel_accum / steps).item()
+            jerk_mean = (self.jerk_accum / max(steps - 1, 1)).item()
+            total_cost = lat_mean * 50.0 + jerk_mean
+            info.update(
+                {
+                    "episode_total_cost": total_cost,
+                    "episode_lat_cost": lat_mean,
+                    "episode_jerk_cost": jerk_mean,
+                    "episode_steps": steps,
+                }
+            )
+
+        obs = self._get_obs()
         return obs, float(reward.item()), terminated, truncated, info
 
     def _load_data(self) -> None:
@@ -303,6 +325,31 @@ def make_vec_env(config: EnvConfig, num_envs: int, seed: int) -> SubprocVecEnv:
     return SubprocVecEnv([_init_env(i) for i in range(num_envs)])
 
 
+class CostLoggingCallback(BaseCallback):
+    def __init__(self, verbose: int = 0) -> None:
+        super().__init__(verbose)
+        self.episode_counter = 0
+
+    def _on_step(self) -> bool:
+        infos = self.locals.get("infos", [])
+        for info in infos:
+            if "episode_total_cost" in info:
+                self.episode_counter += 1
+                total_cost = info["episode_total_cost"]
+                lat_cost = info["episode_lat_cost"]
+                jerk_cost = info["episode_jerk_cost"]
+                steps = info["episode_steps"]
+                self.logger.record("cost/total", total_cost)
+                self.logger.record("cost/lat", lat_cost)
+                self.logger.record("cost/jerk", jerk_cost)
+                self.logger.record("cost/steps", steps)
+                if self.verbose > 0:
+                    print(
+                        f"Episode {self.episode_counter:05d} | total: {total_cost:7.2f} | lat: {lat_cost:6.2f} | jerk: {jerk_cost:6.2f} | steps: {steps:4d} | timestep: {self.num_timesteps}"
+                    )
+        return True
+
+
 def train_sb3() -> None:
     seed = 0
     config = EnvConfig(seed=seed)
@@ -334,7 +381,8 @@ def train_sb3() -> None:
         device="cpu",
     )
 
-    model.learn(total_timesteps=TOTAL_TIMESTEPS)
+    callback = CostLoggingCallback(verbose=1)
+    model.learn(total_timesteps=TOTAL_TIMESTEPS, callback=callback)
     model.save(OUTPUT_PATH)
     vec_env.close()
     print(f"Saved SB3 PPO model to {OUTPUT_PATH}")
