@@ -23,7 +23,7 @@ ACC_G = 9.81
 @dataclass
 class Config:
     # Environment
-    batch_size: int = 5000
+    batch_size: int = 1024
     rollout_steps: int = COST_END_IDX - CONTEXT_LENGTH
     obs_dim: int = 12
     batch_truncation_length: int = 550
@@ -32,15 +32,15 @@ class Config:
     hidden_size: int = 128
 
     # PPO
-    lr: float = 3e-4
+    lr: float = 1e-4
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
-    entropy_coef: float = 0.01
+    entropy_coef: float = 0.03
     value_coef: float = 0.5
     max_grad_norm: float = 0.5
     update_epochs: int = 5
-    minibatch_size: int = 16384
+    minibatch_size: int = 8192
 
     # Training
     total_iterations: int = 500
