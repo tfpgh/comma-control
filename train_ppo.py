@@ -32,7 +32,7 @@ class Config:
     hidden_size: int = 128
 
     # PPO
-    lr: float = 5e-5
+    lr: float = 2e-5
     gamma: float = 0.99
     gae_lambda: float = 0.95
     clip_eps: float = 0.2
@@ -40,9 +40,9 @@ class Config:
     value_coef: float = 0.5
     value_clip_eps: float = 0.2
     max_grad_norm: float = 0.5
-    update_epochs: int = 5
-    minibatch_size: int = 8192
-    reward_scale: float = 4000.0
+    update_epochs: int = 3
+    minibatch_size: int = 4096
+    reward_scale: float = 10000.0
 
     # Training
     total_iterations: int = 2000
@@ -353,7 +353,7 @@ def train() -> None:
     for iter in range(config.total_iterations):
         # Entropy decay
         ent_coef = config.entropy_coef * (1 - iter / config.total_iterations)
-        ent_coef = max(ent_coef, 0.0005)
+        ent_coef = max(ent_coef, 0.01)
 
         obs_buf = []
         act_buf = []
