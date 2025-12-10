@@ -38,9 +38,11 @@ class Config:
     clip_eps: float = 0.2
     entropy_coef: float = 0.03
     value_coef: float = 0.5
+    value_clip_eps: float = 0.2
     max_grad_norm: float = 0.5
     update_epochs: int = 5
     minibatch_size: int = 8192
+    reward_scale: float = 1000.0
 
     # Training
     total_iterations: int = 500
@@ -78,16 +80,25 @@ class BatchedSimulator:
             LATACCEL_RANGE[0], LATACCEL_RANGE[1], VOCAB_SIZE, device=self.device
         )
 
-        # Load CSV data
-        data_files = sorted(Path(config.data_path).glob("*.csv"))[: config.batch_size]
-        print(f"Loading {len(data_files)} CSV files")
-        self._load_data(data_files)
-        print(f"Data shape: {self.all_data.shape}")
+        # Load CSV data (first 5000 segments for training pool)
+        all_files = sorted(Path(config.data_path).glob("*.csv"))[:5000]
+        print(f"Loading {len(all_files)} CSV files (train pool)")
+        self._load_data(all_files)
+        print(f"Train pool shape: {self.all_data_full.shape}")
+
+        # Actual batch size per rollout (may be smaller if pool < batch size)
+        self.n = min(config.batch_size, self.num_segments)
 
     def _load_data(self, data_files: list[Path]) -> None:
         all_data = []
+        skipped = 0
         for f in data_files:
             df = pd.read_csv(f)
+            
+            if len(df) < self.config.batch_truncation_length:
+                skipped += 1
+                continue
+
             # csvs vary in length a little bit
             # we just truncate them all to batch_truncation_length (550)
             data = np.column_stack(
@@ -116,13 +127,19 @@ class BatchedSimulator:
             )
             all_data.append(data)
 
-        self.all_data = torch.tensor(
-            np.stack(all_data), dtype=torch.float32, device=self.device
-        )
+        print(f"Loaded {len(all_data)} segments (skipped {skipped} short files)")
+        self.all_data_full = torch.tensor(np.stack(all_data), dtype=torch.float32)
+        self.num_segments = self.all_data_full.shape[0]
         self.max_steps = self.config.batch_truncation_length
 
     def reset(self) -> Tensor:
         self.step_idx = CONTEXT_LENGTH
+
+        # Sample a random batch of segments from the train pool
+        batch_size = min(self.config.batch_size, self.num_segments)
+        indices = torch.randperm(self.num_segments)[:batch_size]
+        self.all_data = self.all_data_full[indices].to(self.device)
+        self.n = batch_size
 
         # Init histories
         self.action_history = self.all_data[:, :, 4].clone()
@@ -188,10 +205,6 @@ class BatchedSimulator:
 
     def step(self, actions: Tensor) -> tuple[Tensor, Tensor, bool]:
         actions = torch.clamp(actions, STEER_RANGE[0], STEER_RANGE[1])
-
-        prev_actions = self.action_history[:, self.step_idx - 1]
-        actions = torch.clamp(actions, prev_actions - 0.15, prev_actions + 0.15)
-
         self.action_history[:, self.step_idx] = actions
 
         # Physics step
@@ -214,7 +227,7 @@ class BatchedSimulator:
 
         lataccel_cost = error**2 * 100.0
         jerk_cost = jerk**2 * 100.0
-        rewards = -(lataccel_cost * 50.0 + jerk_cost) / 100.0
+        rewards = -(lataccel_cost * 50.0 + jerk_cost) / self.config.reward_scale
 
         self.prev_error = error
         self.error_integral = torch.clamp(self.error_integral + error, -5, 5)
@@ -285,13 +298,15 @@ class ActorCritic(nn.Module):
         )
 
         self.actor_mean = nn.Linear(hidden, 1)
-        self.actor_logstd = nn.Parameter(torch.zeros(1))
+        self.actor_logstd = nn.Linear(hidden, 1)
         self.critic = nn.Linear(hidden, 1)
 
     def forward(self, obs):
         h = self.shared(obs)
-        logstd = torch.clamp(self.actor_logstd, min=-1.0, max=0.5)
-        return self.actor_mean(h), logstd, self.critic(h)
+        mean = self.actor_mean(h)
+        logstd = self.actor_logstd(h)
+        logstd = torch.clamp(logstd, min=-2.0, max=0.5)
+        return mean, logstd, self.critic(h)
 
     def get_action(self, obs, deterministic=False):
         mean, logstd, value = self.forward(obs)
@@ -336,6 +351,10 @@ def train() -> None:
     best_cost = float("inf")
 
     for iter in range(config.total_iterations):
+        # Entropy decay
+        ent_coef = config.entropy_coef * (1 - iter / config.total_iterations)
+        ent_coef = max(ent_coef, 0.005)
+
         obs_buf = []
         act_buf = []
         rew_buf = []
@@ -393,6 +412,7 @@ def train() -> None:
         logp_flat = logp_t.reshape(T * N)
         adv_flat = advantages.reshape(T * N)
         ret_flat = returns.reshape(T * N)
+        val_flat = val_t.reshape(T * N)
 
         # Normalize advantages
         adv_flat = (adv_flat - adv_flat.mean()) / (adv_flat.std() + 1e-8)
@@ -417,12 +437,22 @@ def train() -> None:
                 )
 
                 policy_loss = -torch.min(surr1, surr2).mean()
-                value_loss = ((new_val - ret_flat[idx]) ** 2).mean()
+
+                # Value loss clipping
+                v_loss_unclipped = (new_val - ret_flat[idx]) ** 2
+                v_clipped = val_flat[idx] + torch.clamp(
+                    new_val - val_flat[idx],
+                    -config.value_clip_eps,
+                    config.value_clip_eps,
+                )
+                v_loss_clipped = (v_clipped - ret_flat[idx]) ** 2
+                v_loss_max = torch.max(v_loss_unclipped, v_loss_clipped)
+                value_loss = 0.5 * v_loss_max.mean()
 
                 loss = (
                     policy_loss
                     + config.value_coef * value_loss
-                    - config.entropy_coef * entropy
+                    - ent_coef * entropy
                 )
 
                 optimizer.zero_grad()
