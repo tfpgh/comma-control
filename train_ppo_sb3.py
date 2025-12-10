@@ -30,7 +30,7 @@ OBS_DIM = 22
 TOTAL_TIMESTEPS = 5_000_000
 NUM_ENVS = 62
 N_STEPS = 2048
-BATCH_SIZE = 65_536
+MINI_BATCHES = 8
 LEARNING_RATE = 3e-4
 N_EPOCHS = 10
 OUTPUT_PATH = "ppo_sb3"
@@ -354,8 +354,10 @@ def train_sb3() -> None:
     seed = 0
     config = EnvConfig(seed=seed)
     vec_env = make_vec_env(config, num_envs=NUM_ENVS, seed=seed)
+    buffer_size = N_STEPS * vec_env.num_envs
+    batch_size = max(64, buffer_size // MINI_BATCHES)
     print(
-        f"Training PPO on CPU with {NUM_ENVS} envs, n_steps={N_STEPS}, batch_size={BATCH_SIZE}"
+        f"Training PPO on CPU with {vec_env.num_envs} envs, n_steps={N_STEPS}, batch_size={batch_size}"
     )
 
     policy_kwargs = dict(
@@ -368,7 +370,7 @@ def train_sb3() -> None:
         vec_env,
         learning_rate=LEARNING_RATE,
         n_steps=N_STEPS,
-        batch_size=BATCH_SIZE,
+        batch_size=batch_size,
         n_epochs=N_EPOCHS,
         gamma=0.99,
         gae_lambda=0.95,
