@@ -10,7 +10,7 @@ import torch.multiprocessing as mp
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 64
+POPULATION_SIZE = 32
 NUM_SEGMENTS = 5000
 MAX_GENERATIONS = 10000
 INPUT_SIZE = 15

@@ -9,7 +9,7 @@ from pathlib import Path
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 64
+POPULATION_SIZE = 32
 NUM_SEGMENTS = 5000
 MAX_GENERATIONS = 10000
 INPUT_SIZE = 15
@@ -314,7 +314,7 @@ class GPUWorker(mp.Process):
 def main():
     mp.set_start_method("spawn", force=True)
 
-    print(f"Starting 4-GPU CMA-ES (High-Performance IO Binding).")
+    print("Starting 4-GPU CMA-ES (High-Performance IO Binding).")
     print(f"Population: {POPULATION_SIZE} | Segments: {NUM_SEGMENTS}")
 
     task_queues = [mp.Queue() for _ in range(NUM_GPUS)]
