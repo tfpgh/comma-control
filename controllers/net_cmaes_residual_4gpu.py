@@ -388,7 +388,7 @@ def main():
 
             if gen_best < best_ever:
                 best_ever = gen_best
-                np.save("4gpu_best_params.npy", es.result.xbest)
+                np.save("residual_best_params.npy", es.result.xbest)
 
             print(
                 f"Gen {es.countiter:4d} | Best: {gen_best:6.2f} | Mean: {gen_mean:6.2f} | "
@@ -397,7 +397,7 @@ def main():
             )
 
             if es.countiter % 50 == 0:
-                np.save(f"4gpu_checkpoint_{es.countiter}.npy", es.result.xbest)
+                np.save(f"residual_checkpoint_{es.countiter}.npy", es.result.xbest)
 
     except KeyboardInterrupt:
         print("Stopping...")
