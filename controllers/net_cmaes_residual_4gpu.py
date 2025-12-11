@@ -10,8 +10,8 @@ import torch.multiprocessing as mp
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 128
-NUM_SEGMENTS = 64
+POPULATION_SIZE = 512
+NUM_SEGMENTS = 250
 MAX_GENERATIONS = 10000
 INPUT_SIZE = 15
 HIDDEN_SIZE = 18
@@ -343,10 +343,13 @@ def main():
         p.start()
         workers.append(p)
 
-    num_params = (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + HIDDEN_SIZE + 1
-    x0 = np.random.randn(num_params) * 0.01
+    # num_params = (INPUT_SIZE * HIDDEN_SIZE) + HIDDEN_SIZE + HIDDEN_SIZE + 1
+    # x0 = np.random.randn(num_params) * 0.01
+
+    x0 = np.load("residual_best_params.npy")
+
     es = cma.CMAEvolutionStrategy(
-        x0, 0.5, {"popsize": POPULATION_SIZE, "maxiter": MAX_GENERATIONS}
+        x0, 0.2, {"popsize": POPULATION_SIZE, "maxiter": MAX_GENERATIONS}
     )
 
     print("Optimization started...")

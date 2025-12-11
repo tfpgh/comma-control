@@ -5,8 +5,8 @@ import numpy as np
 from controllers import BaseController
 from tinyphysics import FuturePlan, State
 
-INPUT_LAYER_SIZE = 10  # Changing requires adding or removing actual inputs
-HIDDEN_LAYER_SIZE = 16
+INPUT_LAYER_SIZE = 15  # 8 base + 2 past actions + 6 raw future
+HIDDEN_LAYER_SIZE = 18
 NUM_PARAMS = (
     INPUT_LAYER_SIZE * HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + HIDDEN_LAYER_SIZE + 1
 )
@@ -25,6 +25,7 @@ class Controller(BaseController):
         self.prev_error = 0.0
         self.error_integral = 0.0
         self.prev_action = 0.0
+        self.prev_prev_action = 0.0 # Track for t-2
 
         # load params if they exist
         params_path = Path(__file__).parent.parent / "best_params.npy"
@@ -46,6 +47,7 @@ class Controller(BaseController):
         self.prev_error = 0.0
         self.error_integral = 0.0
         self.prev_action = 0.0
+        self.prev_prev_action = 0.0 # Reset for each segment
 
     def update(
         self,
@@ -59,14 +61,16 @@ class Controller(BaseController):
         error_deriv = error - self.prev_error
         self.error_integral = np.clip(self.error_integral + error, -5, 5)
 
-        # futures
+        # futures: get first 6 raw points
         fp = future_plan.lataccel if future_plan.lataccel else []
-        future_near = np.mean(fp[:5]) if len(fp) >= 5 else target_lataccel
-        future_mid = np.mean(fp[5:15]) if len(fp) >= 15 else target_lataccel
+        if len(fp) < 6:
+            fp = list(fp) + [target_lataccel] * (6 - len(fp))
+        future_raw = np.array(fp[:6])
 
-        # build input features
-        # here I normalize them to try to make learning faster
-        # not sure this does much...
+        # build input features (8 base + 2 past actions + 6 future = 16, wait 7 base + 2 past actions + 6 future = 15)
+        # 7 base: error, error_deriv, error_integral, target_lataccel, v_ego, a_ego, roll_lataccel
+        # 2 past actions: self.prev_action (t-1), self.prev_prev_action (t-2)
+        # 6 raw future
         x = np.array(
             [
                 error / 5.0,
@@ -76,9 +80,9 @@ class Controller(BaseController):
                 state.v_ego / 30.0,
                 state.a_ego / 4.0,
                 state.roll_lataccel / 2.0,
-                self.prev_action / 2.0,
-                future_near / 5.0,
-                future_mid / 5.0,
+                self.prev_action / 2.0,       # t-1 action
+                self.prev_prev_action / 2.0,  # t-2 action
+                *(future_raw / 5.0),          # 6 raw future points
             ]
         )
 
@@ -89,9 +93,10 @@ class Controller(BaseController):
         # scale to steering range
         action = float(output[0]) * 2.0
 
-        # update state
+        # update state for next iteration
         self.prev_error = error
-        self.prev_action = action
+        self.prev_prev_action = self.prev_action # Update t-2 with t-1
+        self.prev_action = action              # Update t-1 with current action
 
         return action
 
