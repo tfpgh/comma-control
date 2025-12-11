@@ -6,15 +6,14 @@ import onnxruntime as ort
 import cma
 import torch.multiprocessing as mp
 from pathlib import Path
-from queue import Empty
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 768  # Increased for robust search
-NUM_SEGMENTS = 128  # High reliability
+POPULATION_SIZE = 128
+NUM_SEGMENTS = 64
 MAX_GENERATIONS = 10000
-INPUT_SIZE = 20  # 18 + 2 Past Actions
-HIDDEN_SIZE = 24
+INPUT_SIZE = 15
+HIDDEN_SIZE = 18
 
 # Physics Constants
 CONTEXT_LENGTH = 20
@@ -200,11 +199,11 @@ class GPUWorker(mp.Process):
             error_integral = torch.clamp(error_integral + error, -5.0, 5.0)
 
             # Future Window (Raw Points)
-            end_idx = min(step + 11, 550)
+            end_idx = min(step + 7, 550)
             raw_future = targets[:, step + 1 : end_idx]
 
             # Pad if needed
-            missing = 10 - raw_future.shape[1]
+            missing = 6 - raw_future.shape[1]
             if missing > 0:
                 pad = targets[:, idx_now : idx_now + 1].repeat(1, missing)
                 raw_future = torch.cat([raw_future, pad], dim=1)
@@ -220,11 +219,6 @@ class GPUWorker(mp.Process):
                 if step >= 2
                 else torch.zeros_like(u_t1)
             )
-            u_t3 = (
-                action_history[:, step - 3].unsqueeze(1)
-                if step >= 3
-                else torch.zeros_like(u_t1)
-            )
 
             x = torch.cat(
                 [
@@ -237,8 +231,7 @@ class GPUWorker(mp.Process):
                     batch_data[:, idx_now, 0:1] / 2.0,
                     u_t1 / 2.0,
                     u_t2 / 2.0,
-                    u_t3 / 2.0,
-                    raw_future / 5.0,  # (Batch, 10)
+                    raw_future / 5.0,
                 ],
                 dim=1,
             )
