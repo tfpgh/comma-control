@@ -182,7 +182,10 @@ class GPUWorker(mp.Process):
 
         # 3. Initialize Sim State
         lataccel_history = batch_data[:, :, 3].clone()
-        action_history = batch_data[:, :, 4].clone()
+        # Initialize action_history with zeros to match eval controller behavior
+        # Only pre-fill context window (0-19) from data for physics simulation
+        action_history = torch.zeros_like(batch_data[:, :, 4])
+        action_history[:, :CONTEXT_LENGTH] = batch_data[:, :CONTEXT_LENGTH, 4].clone()
         current_lataccel = lataccel_history[:, CONTEXT_LENGTH - 1]
 
         prev_error = torch.zeros(batch_size, 1, device=self.device)
