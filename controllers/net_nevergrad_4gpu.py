@@ -10,8 +10,8 @@ import torch.multiprocessing as mp
 
 # --- Configuration ---
 NUM_GPUS = 4
-POPULATION_SIZE = 128
-NUM_SEGMENTS = 64
+POPULATION_SIZE = 512
+NUM_SEGMENTS = 100
 MAX_GENERATIONS = 10000
 INPUT_SIZE = 30  # Hybrid: 7 base + 5 past + 10 raw future + 5 compressed + 3 derivative
 HIDDEN_1 = 64
@@ -215,7 +215,11 @@ class GPUWorker(mp.Process):
             error_integral = torch.clamp(error_integral + error, -5.0, 5.0)
 
             # Past actions (5)
-            u_t1 = action_history[:, step - 1].unsqueeze(1) if step >= 1 else torch.zeros_like(error)
+            u_t1 = (
+                action_history[:, step - 1].unsqueeze(1)
+                if step >= 1
+                else torch.zeros_like(error)
+            )
             u_t2 = action_history[:, step - 2].unsqueeze(1) if step >= 2 else u_t1
             u_t3 = action_history[:, step - 3].unsqueeze(1) if step >= 3 else u_t2
             u_t4 = action_history[:, step - 4].unsqueeze(1) if step >= 4 else u_t3
@@ -233,27 +237,51 @@ class GPUWorker(mp.Process):
 
             # Near future mean
             future_near = targets[:, step + 1 : min(step + 6, 550)]
-            future_near_mean = future_near.mean(dim=1, keepdim=True) if future_near.shape[1] > 0 else targets[:, idx_now : idx_now + 1]
+            future_near_mean = (
+                future_near.mean(dim=1, keepdim=True)
+                if future_near.shape[1] > 0
+                else targets[:, idx_now : idx_now + 1]
+            )
 
             # Mid future mean
             future_mid = targets[:, step + 6 : min(step + 16, 550)]
-            future_mid_mean = future_mid.mean(dim=1, keepdim=True) if future_mid.shape[1] > 0 else future_near_mean
+            future_mid_mean = (
+                future_mid.mean(dim=1, keepdim=True)
+                if future_mid.shape[1] > 0
+                else future_near_mean
+            )
 
             # Far future mean
             future_far = targets[:, step + 16 : max_future_idx]
-            future_far_mean = future_far.mean(dim=1, keepdim=True) if future_far.shape[1] > 0 else future_mid_mean
+            future_far_mean = (
+                future_far.mean(dim=1, keepdim=True)
+                if future_far.shape[1] > 0
+                else future_mid_mean
+            )
 
             # Future std (curviness)
             all_future = targets[:, step + 1 : max_future_idx]
-            future_std = all_future.std(dim=1, keepdim=True, unbiased=False) if all_future.shape[1] > 1 else torch.zeros_like(future_near_mean)
+            future_std = (
+                all_future.std(dim=1, keepdim=True, unbiased=False)
+                if all_future.shape[1] > 1
+                else torch.zeros_like(future_near_mean)
+            )
 
             # Future max
-            future_max = all_future.max(dim=1, keepdim=True)[0] if all_future.shape[1] > 0 else targets[:, idx_now : idx_now + 1]
+            future_max = (
+                all_future.max(dim=1, keepdim=True)[0]
+                if all_future.shape[1] > 0
+                else targets[:, idx_now : idx_now + 1]
+            )
 
             # Derivative features (3)
-            prev_lataccel = lataccel_history[:, step - 1] if step > 0 else current_lataccel
+            prev_lataccel = (
+                lataccel_history[:, step - 1] if step > 0 else current_lataccel
+            )
             lataccel_delta = (current_lataccel - prev_lataccel).unsqueeze(1)
-            speed_target_product = (batch_data[:, idx_now, 1:2] * targets[:, idx_now : idx_now + 1]) / 150.0
+            speed_target_product = (
+                batch_data[:, idx_now, 1:2] * targets[:, idx_now : idx_now + 1]
+            ) / 150.0
 
             # Concatenate all 30 features
             x = torch.cat(
@@ -264,8 +292,8 @@ class GPUWorker(mp.Process):
                     error_integral / 5.0,
                     targets[:, idx_now : idx_now + 1] / 5.0,
                     batch_data[:, idx_now, 1:2] / 30.0,  # v_ego
-                    batch_data[:, idx_now, 2:3] / 4.0,   # a_ego
-                    batch_data[:, idx_now, 0:1] / 2.0,   # roll
+                    batch_data[:, idx_now, 2:3] / 4.0,  # a_ego
+                    batch_data[:, idx_now, 0:1] / 2.0,  # roll
                     # Past actions (5)
                     u_t1 / 2.0,
                     u_t2 / 2.0,
@@ -449,7 +477,10 @@ def main():
 
             if gen_best < best_ever:
                 best_ever = gen_best
-                np.save("nevergrad_best_params.npy", optimizer.provide_recommendation().value)
+                np.save(
+                    "nevergrad_best_params.npy",
+                    optimizer.provide_recommendation().value,
+                )
 
             print(
                 f"Gen {generation:4d} | Best: {gen_best:6.2f} | Mean: {gen_mean:6.2f} | "
