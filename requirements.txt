@@ -9,3 +9,4 @@ torch
 stable-baselines3
 gymnasium
 sb3-contrib
+nevergrad
